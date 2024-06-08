@@ -1,157 +1,174 @@
-import streamlit as st
+# -*- coding: utf-8 -*-
+# Copyright 2018-2022 Streamlit Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""An example of showing geographic data."""
+
+import os
+import altair as alt
 import numpy as np
 import pandas as pd
-import altair as alt
+import pydeck as pdk
+import streamlit as st
 from datetime import datetime, timedelta
+import random
 
-# Page title
-st.set_page_config(page_title='Support Ticket Workflow', page_icon='🎫')
-st.title('🎫 Support Ticket Workflow')
-st.info('To write a ticket, fill out the form below. Check status or review ticketing analytics using the tabs below.')
+# SETTING PAGE CONFIG TO WIDE MODE AND ADDING A TITLE AND FAVICON
+st.set_page_config(layout="wide", page_title="Tanger Med 2 Port Data", page_icon=":ship:")
 
 
-# Generate data
-## Set seed for reproducibility
-np.random.seed(42)
+# FUNCTION TO GENERATE DUMMY DATA
+@st.cache_data
+def generate_data():
+    start_date = datetime(2024, 1, 1, 0, 0)
+    num_entries = 1000
+    data = []
+    base = 'B02512'
+    lat_tanger_med2_port = 35.891
+    lon_tanger_med2_port = -5.498
 
-## Function to generate a random issue description
-def generate_issue():
-    issues = [
-        "Network connectivity issues in the office",
-        "Software application crashing on startup",
-        "Printer not responding to print commands",
-        "Email server downtime",
-        "Data backup failure",
-        "Login authentication problems",
-        "Website performance degradation",
-        "Security vulnerability identified",
-        "Hardware malfunction in the server room",
-        "Employee unable to access shared files",
-        "Database connection failure",
-        "Mobile application not syncing data",
-        "VoIP phone system issues",
-        "VPN connection problems for remote employees",
-        "System updates causing compatibility issues",
-        "File server running out of storage space",
-        "Intrusion detection system alerts",
-        "Inventory management system errors",
-        "Customer data not loading in CRM",
-        "Collaboration tool not sending notifications"
+    for _ in range(num_entries):
+        random_seconds = random.randint(0, 24 * 3600 - 1)
+        date_time = start_date + timedelta(seconds=random_seconds)
+        lat = lat_tanger_med2_port + random.uniform(-0.05, 0.05)
+        lon = lon_tanger_med2_port + random.uniform(-0.05, 0.05)
+        data.append([date_time, round(lat, 4), round(lon, 4), base])
+
+    df = pd.DataFrame(data, columns=['date/time', 'lat', 'lon', 'base'])
+    return df
+
+# LOAD DATA ONCE
+@st.cache_data
+def load_data():
+    return generate_data()
+
+# FUNCTION FOR MAPS
+def map(data, lat, lon, zoom):
+    st.write(
+        pdk.Deck(
+            map_style="mapbox://styles/mapbox/light-v9",
+            initial_view_state={
+                "latitude": lat,
+                "longitude": lon,
+                "zoom": zoom,
+                "pitch": 50,
+            },
+            layers=[
+                pdk.Layer(
+                    "HexagonLayer",
+                    data=data,
+                    get_position=["lon", "lat"],
+                    radius=100,
+                    elevation_scale=4,
+                    elevation_range=[0, 1000],
+                    pickable=True,
+                    extruded=True,
+                ),
+            ],
+        )
+    )
+
+# FILTER DATA FOR A SPECIFIC HOUR, CACHE
+@st.cache_data
+def filterdata(df, hour_selected):
+    return df[df["date/time"].dt.hour == hour_selected]
+
+# CALCULATE MIDPOINT FOR GIVEN SET OF DATA
+@st.cache_data
+def mpoint(lat, lon):
+    return (np.average(lat), np.average(lon))
+
+# FILTER DATA BY HOUR
+@st.cache_data
+def histdata(df, hr):
+    filtered = df[
+        (df["date/time"].dt.hour >= hr) & (df["date/time"].dt.hour < (hr + 1))
     ]
-    return np.random.choice(issues)
 
-## Function to generate random dates
-start_date = datetime(2023, 6, 1)
-end_date = datetime(2023, 12, 20)
-id_values = ['TICKET-{}'.format(i) for i in range(1000, 1100)]
-issue_list = [generate_issue() for _ in range(100)]
+    hist = np.histogram(filtered["date/time"].dt.minute, bins=60, range=(0, 60))[0]
 
+    return pd.DataFrame({"minute": range(60), "pickups": hist})
 
-def generate_random_dates(start_date, end_date, id_values):
-    date_range = pd.date_range(start_date, end_date).strftime('%m-%d-%Y')
-    return np.random.choice(date_range, size=len(id_values), replace=False)
+# STREAMLIT APP LAYOUT
+data = load_data()
 
-## Generate 100 rows of data
-data = {'Issue': issue_list,
-        'Status': np.random.choice(['Open', 'In Progress', 'Closed'], size=100),
-        'Priority': np.random.choice(['High', 'Medium', 'Low'], size=100),
-        'Date Submitted': generate_random_dates(start_date, end_date, id_values)
-    }
-df = pd.DataFrame(data)
-df.insert(0, 'ID', id_values)
-df = df.sort_values(by=['Status', 'ID'], ascending=[False, False])
+# LAYING OUT THE TOP SECTION OF THE APP
+row1_1, row1_2 = st.columns((2, 3))
 
-## Create DataFrame
-if 'df' not in st.session_state:
-    st.session_state.df = df
+# SEE IF THERE'S A QUERY PARAM IN THE URL (e.g. ?pickup_hour=2)
+# THIS ALLOWS YOU TO PASS A STATEFUL URL TO SOMEONE WITH A SPECIFIC HOUR SELECTED,
+# E.G. https://share.streamlit.io/streamlit/demo-uber-nyc-pickups/main?pickup_hour=2
+if not st.session_state.get("url_synced", False):
+    try:
+        pickup_hour = int(st.experimental_get_query_params()["pickup_hour"][0])
+        st.session_state["pickup_hour"] = pickup_hour
+        st.session_state["url_synced"] = True
+    except KeyError:
+        pass
 
-# Sort dataframe
-def sort_df():
-    st.session_state.df = edited_df.copy().sort_values(by=['Status', 'ID'], ascending=[False, False])
+# IF THE SLIDER CHANGES, UPDATE THE QUERY PARAM
+def update_query_params():
+    hour_selected = st.session_state["pickup_hour"]
+    st.experimental_set_query_params(pickup_hour=hour_selected)
 
+with row1_1:
+    st.title("Tanger Med 2 Port Data")
+    hour_selected = st.slider(
+        "Select hour of pickup", 0, 23, key="pickup_hour", on_change=update_query_params
+    )
 
-# Tabs for app layout
-tabs = st.tabs(['Write a ticket', 'Ticket Status and Analytics'])
+with row1_2:
+    st.write(
+        """
+    ##
+    Examining how vehicle movements vary over time at Tanger Med 2 Port.
+    By sliding the slider on the left you can view different slices of time and explore different transportation trends.
+    """
+    )
 
-recent_ticket_number = int(max(st.session_state.df.ID).split('-')[1])
+# LAYING OUT THE MIDDLE SECTION OF THE APP WITH THE MAPS
+row2_1, row2_2 = st.columns((3, 1))
 
-with tabs[0]:
-  with st.form('addition'):
-    issue = st.text_area('Description of issue')
-    priority = st.selectbox('Priority', ['High', 'Medium', 'Low'])
-    submit = st.form_submit_button('Submit')
+# SETTING THE ZOOM LOCATIONS FOR THE PORT
+port_location = [35.891, -5.498]
+zoom_level = 12
+midpoint = mpoint(data["lat"], data["lon"])
 
-  if submit:
-      today_date = datetime.now().strftime('%m-%d-%Y')
-      df2 = pd.DataFrame([{'ID': f'TICKET-{recent_ticket_number+1}',
-                           'Issue': issue,
-                           'Status': 'Open',
-                           'Priority': priority,
-                           'Date Submitted': today_date
-                          }])
-      st.write('Ticket submitted!')
-      st.dataframe(df2, use_container_width=True, hide_index=True)
-      st.session_state.df = pd.concat([st.session_state.df, df2], axis=0).sort_values(by=['Status', 'ID'], ascending=[False, False])
+with row2_1:
+    st.write(
+        f"""**Tanger Med 2 Port from {hour_selected}:00 and {(hour_selected + 1) % 24}:00**"""
+    )
+    map(filterdata(data, hour_selected), midpoint[0], midpoint[1], 11)
 
-with tabs[1]:
-  status_col = st.columns((3,1))
-  with status_col[0]:
-      st.subheader('Support Ticket Status')
-  with status_col[1]:
-      st.write(f'No. of tickets: `{len(st.session_state.df)}`')
+# CALCULATING DATA FOR THE HISTOGRAM
+chart_data = histdata(data, hour_selected)
 
-  st.markdown('**Things to try:**')
-  st.info('1️⃣ Update Ticket **Status** or **Priority** and see how plots are updated in real-time!')
-  st.success('2️⃣ Change values in **Status** column from *"Open"* to either *"In Progress"* or *"Closed"*, then click on the **Sort DataFrame by the Status column** button to see the refreshed DataFrame with the sorted **Status** column.')
+# LAYING OUT THE HISTOGRAM SECTION
+st.write(
+    f"""**Breakdown of movements per minute between {hour_selected}:00 and {(hour_selected + 1) % 24}:00**"""
+)
 
-  edited_df = st.data_editor(st.session_state.df, use_container_width=True, hide_index=True, height=212,
-                column_config={'Status': st.column_config.SelectboxColumn(
-                                            'Status',
-                                            help='Ticket status',
-                                            options=[
-                                                'Open',
-                                                'In Progress',
-                                                'Closed'
-                                            ],
-                                            required=True,
-                                            ),
-                               'Priority': st.column_config.SelectboxColumn(
-                                           'Priority',
-                                            help='Priority',
-                                            options=[
-                                                'High',
-                                                'Medium',
-                                                'Low'
-                                            ],
-                                            required=True,
-                                            ),
-                             })
-  st.button('🔄 Sort DataFrame by the Status column', on_click=sort_df)
-  
-  # Status plot
-  st.subheader('Support Ticket Analytics')
-  col = st.columns((1,3,1))
-    
-  with col[0]:
-      n_tickets_queue = len(st.session_state.df[st.session_state.df.Status=='Open'])
-      
-      st.metric(label='First response time (hr)', value=5.2, delta=-1.5)
-      st.metric(label='No. of tickets in the queue', value=n_tickets_queue, delta='')
-      st.metric(label='Avg. ticket resolution time (hr)', value=16, delta='')
-      
-      
-  with col[1]:
-      status_plot = alt.Chart(edited_df).mark_bar().encode(
-          x='month(Date Submitted):O',
-          y='count():Q',
-          xOffset='Status:N',
-          color = 'Status:N'
-      ).properties(title='Ticket status in the past 6 months', height=300).configure_legend(orient='bottom', titleFontSize=14, labelFontSize=14, titlePadding=5)
-      st.altair_chart(status_plot, use_container_width=True, theme='streamlit')
-      
-  with col[2]:
-      priority_plot = alt.Chart(edited_df).mark_arc().encode(
-                          theta="count():Q",
-                          color="Priority:N"
-                      ).properties(title='Current ticket priority', height=300).configure_legend(orient='bottom', titleFontSize=14, labelFontSize=14, titlePadding=5)
-      st.altair_chart(priority_plot, use_container_width=True, theme='streamlit')
+st.altair_chart(
+    alt.Chart(chart_data)
+    .mark_area(
+        interpolate="step-after",
+    )
+    .encode(
+        x=alt.X("minute:Q", scale=alt.Scale(nice=False)),
+        y=alt.Y("pickups:Q"),
+        tooltip=["minute", "pickups"],
+    )
+    .configure_mark(opacity=0.2, color="blue"),
+    use_container_width=True,
+)
